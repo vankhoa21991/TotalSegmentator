@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import random
@@ -10,6 +11,7 @@ from pathlib import Path
 from os.path import join
 from typing import Union
 from functools import partial
+from collections import defaultdict
 from multiprocessing import Pool
 import tempfile
 import inspect
@@ -213,7 +215,7 @@ def nnUNetv2_predict(dir_in, dir_out, task_id, model="3d_fullres", folds=None,
         device = torch.device('mps')
     disable_tta = not tta
     verbose = False
-    save_probabilities = False
+    save_probabilities = True
     continue_prediction = False
     chk = "checkpoint_final.pth"
     npp = num_threads_preprocessing
@@ -501,6 +503,7 @@ def nnUNet_predict_image(file_in: Union[str, Path, Nifti1Image], file_out, task_
                 class_map_inv = {v: k for k, v in class_map[task_name].items()}
                 (tmp_dir / "parts").mkdir(exist_ok=True)
                 seg_combined = {}
+                npz_combined = defaultdict(dict)
                 # iterate over subparts of image
                 for img_part in img_parts:
                     img_shape = nib.load(tmp_dir / f"{img_part}_0000.nii.gz").shape
@@ -518,11 +521,34 @@ def nnUNet_predict_image(file_in: Union[str, Path, Nifti1Image], file_out, task_
                     for img_part in img_parts:
                         (tmp_dir / f"{img_part}.nii.gz").rename(tmp_dir / "parts" / f"{img_part}_{tid}.nii.gz")
                         seg = nib.load(tmp_dir / "parts" / f"{img_part}_{tid}.nii.gz").get_fdata()
+
+                        # Save npz files for each part
+                        (tmp_dir / f"{img_part}.npz").rename(tmp_dir / "parts" / f"{img_part}_{tid}.npz")
+                        npz = np.load(tmp_dir / "parts" / f"{img_part}_{tid}.npz")["probabilities"]
+                        class_dict = defaultdict(dict)
                         for jdx, class_name in class_map_parts[map_taskid_to_partname[tid]].items():
                             seg_combined[img_part][seg == jdx] = class_map_inv[class_name]
+
+                            # get the same area of the segmentation for the npz
+                            score_map = np.transpose(npz[jdx], (2, 1, 0))[seg == jdx]
+                            mean_score = np.mean(score_map)
+                            std_score = np.std(score_map)
+                            class_dict[class_name] = {'mean': float(mean_score), 'std': float(std_score)}
+
+                    npz_combined[tid] = class_dict
+                        # for jdx in list((np.unique(seg))):
+                        #     if jdx == 0:
+                        #         npz_combined[img_part]["background"] = npz[int(jdx)]
+                        #     else:
+                        #         npz_combined[img_part][class_map_parts[map_taskid_to_partname[tid]][int(jdx)]] = npz[int(jdx)]
+
                 # iterate over subparts of image
                 for img_part in img_parts:
                     nib.save(nib.Nifti1Image(seg_combined[img_part], img_in_rsp.affine), tmp_dir / f"{img_part}.nii.gz")
+                    # Save npz files for each part
+                    # np.savez(file_out / f"{img_part}.npz", probabilities=npz_combined[img_part])
+                    json.dump(npz_combined, open(file_out / f"{img_part}.json", "w"), indent=4)
+
             elif test == 1:
                 print("WARNING: Using reference seg instead of prediction for testing.")
                 shutil.copy(Path("tests") / "reference_files" / "example_seg.nii.gz", tmp_dir / "s01.nii.gz")

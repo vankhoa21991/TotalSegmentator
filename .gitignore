@@ -28,3 +28,5 @@ unittest_prediction_fast_force_split.nii.gz
 *.ipynb
 output/
 data/
+results
+output_mask*
